@@ -22,31 +22,19 @@ module "vpc" {
   default_security_group_tags   = { Name = "${local.name}-default" }
 
   public_subnet_tags = {
-    "kubernetes.io/role/elb" = 1
+    "kubernetes.io/role/elb"              = 1
+    "kubernetes.io/cluster/${local.name}" = "shared" #adding tags for deploy elb
   }
 
   private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = 1
+    "kubernetes.io/role/internal-elb"     = 1
+    "kubernetes.io/cluster/${local.name}" = "shared" #adding tags for deploy elb
   }
 
   tags = local.tags
 
 }
 
-#Adding tags a subnets for deploy elb.
-#resource "aws_ec2_tag" "private_subnets" {
-#  for_each    = toset(module.vpc.private_subnets)
-#  resource_id = each.value
-#  key         = "kubernetes.io/cluster/${local.name}"
-#  value       = "shared"
-#}
-#
-#resource "aws_ec2_tag" "public_subnets" {
-#  for_each    = toset(module.vpc.public_subnets)
-#  resource_id = each.value
-#  key         = "kubernetes.io/cluster/${local.name}"
-#  value       = "shared"
-#}
 
 #Adding EKS Cluster
 
