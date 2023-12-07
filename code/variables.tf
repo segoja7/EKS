@@ -31,14 +31,9 @@ variable "eks_admin_role_name" {
   description = "Additional IAM role to be admin in the cluster"
 }
 
-variable "node_group_name"  {
-  type = string
+variable "node_group_name" {
+  type        = string
   description = "node groups name"
 }
 
-variable "argocd_secret_manager_name_suffix" {
-  type        = string
-  description = "Name of secret manager secret for ArgoCD Admin UI Password"
-  default     = "argocd-admin-secret"
-}
 

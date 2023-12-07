@@ -63,6 +63,18 @@ module "eks" {
     }
   }
 
+  cluster_addons = {
+    coredns = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+    vpc-cni = {
+      most_recent = true
+    }
+  }
+
   tags = merge(local.tags, {
     # NOTE - if creating multiple security groups with this module, only tag the
     # security group that Karpenter should utilize with the following tag
@@ -70,3 +82,5 @@ module "eks" {
     "karpenter.sh/discovery" = "${local.name}"
   })
 }
+
+
