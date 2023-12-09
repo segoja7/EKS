@@ -26,10 +26,10 @@ variable "cluster_version" {
   type        = string
 }
 
-variable "eks_admin_role_name" {
-  type        = string
-  description = "Additional IAM role to be admin in the cluster"
-}
+#variable "eks_admin_role_name" {
+#  type        = string
+#  description = "Additional IAM role to be admin in the cluster"
+#}
 
 variable "node_group_name" {
   type        = string
