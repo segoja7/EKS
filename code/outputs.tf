@@ -17,3 +17,8 @@ output "cluster_certificate_authority_data" {
   description = "cluster_certificate_authority_data"
   value       = module.eks.cluster_certificate_authority_data
 }
+
+#output "iam_role_arn" {
+#  description = "The Amazon Resource Name (ARN) specifying the IAM role"
+#  value       = module.eks.cluster_iam_role_arn
+#}

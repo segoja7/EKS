@@ -16,10 +16,10 @@ variable "vpc_cidr" {
 
 ##EKS VARIABLES.
 
-variable "service_name" {
-  description = "The name of the Suffix for the stack name"
-  type        = string
-}
+#variable "service_name" {
+#  description = "The name of the Suffix for the stack name"
+#  type        = string
+#}
 
 variable "cluster_version" {
   description = "The Version of Kubernetes to deploy"
