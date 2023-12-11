@@ -56,38 +56,38 @@ module "eks" {
       node_group_name = var.node_group_name
       instance_types  = ["m5.large"]
 
-      min_size     = 1
-      max_size     = 5
-      desired_size = 2
-      subnet_ids   = module.vpc.private_subnets
+      min_size                     = 1
+      max_size                     = 5
+      desired_size                 = 2
+      subnet_ids                   = module.vpc.private_subnets
       iam_role_additional_policies = {
-        EBSCSIDriverPolicy  = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+        EBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
       }
 
+    }
+
+    cluster_addons = {
+      coredns = {
+        most_recent = true
+      }
+      kube-proxy = {
+        most_recent = true
+      }
+      vpc-cni = {
+        most_recent = true
+      }
+      aws-ebs-csi-driver = {
+        most_recent = true
+      }
+    }
+
+    tags = merge(local.tags, {
+      # NOTE - if creating multiple security groups with this module, only tag the
+      # security group that Karpenter should utilize with the following tag
+      # (i.e. - at most, only one security group should have this tag in your account)
+      "karpenter.sh/discovery" = "${local.name}"
+    })
   }
-
-  cluster_addons = {
-    coredns = {
-      most_recent = true
-    }
-    kube-proxy = {
-      most_recent = true
-    }
-    vpc-cni = {
-      most_recent = true
-    }
-    aws-ebs-csi-driver = {
-      most_recent = true
-    }
-  }
-
-  tags = merge(local.tags, {
-    # NOTE - if creating multiple security groups with this module, only tag the
-    # security group that Karpenter should utilize with the following tag
-    # (i.e. - at most, only one security group should have this tag in your account)
-    "karpenter.sh/discovery" = "${local.name}"
-  })
-
 }
 
 
