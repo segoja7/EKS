@@ -110,5 +110,5 @@ Temporary Items
 /k8s1.drawio
 /.$k8s1.drawio.dtmp
 /doc/
-/ebs-pv.drawio
-/.$ebs-pv.drawio.bkp
+*.drawio
+*.drawio.bkp
