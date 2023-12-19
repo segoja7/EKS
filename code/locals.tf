@@ -11,3 +11,7 @@ locals {
     blog = "kubernetes-series"
   }
 }
+
+locals {
+  cleaned_issuer_url = replace(module.eks.cluster_oidc_issuer_url, "https://", "")
+}

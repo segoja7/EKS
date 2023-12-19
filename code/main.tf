@@ -56,13 +56,15 @@ module "eks" {
       node_group_name = var.node_group_name
       instance_types  = ["m5.large"]
 
-      min_size                     = 1
-      max_size                     = 5
-      desired_size                 = 2
-      subnet_ids                   = module.vpc.private_subnets
+      min_size     = 1
+      max_size     = 5
+      desired_size = 2
+      subnet_ids   = module.vpc.private_subnets
       iam_role_additional_policies = {
-        EBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+        EBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
+        #        Velero = aws_iam_policy.velero-backup.arn
       }
+
 
     }
 
@@ -81,6 +83,7 @@ module "eks" {
       }
     }
 
+
     tags = merge(local.tags, {
       # NOTE - if creating multiple security groups with this module, only tag the
       # security group that Karpenter should utilize with the following tag
@@ -88,6 +91,116 @@ module "eks" {
       "karpenter.sh/discovery" = "${local.name}"
     })
   }
+}
+
+module "eks_blueprints_addons" {
+  source  = "aws-ia/eks-blueprints-addons/aws"
+  version = "~> 1.0" #ensure to update this to the latest/desired version
+
+  cluster_name      = module.eks.cluster_name
+  cluster_endpoint  = module.eks.cluster_endpoint
+  cluster_version   = module.eks.cluster_version
+  oidc_provider_arn = module.eks.oidc_provider_arn
+
+
+#  enable_velero = true
+#  velero = {
+#    s3_backup_location = "arn:aws:s3:::bucket-s3-terraform-nequi/velero-test"
+#  }
+#
+  helm_releases = {
+    velero = {
+      name             = "velero"
+      namespace        = "velero"
+      create_namespace = true
+      chart            = "./helm-charts/helm-charts-velero-5.2.0/velero"
+      values           = [templatefile("./helm-charts/helm-charts-velero-5.2.0/velero/values.yaml", { ROLE = aws_iam_role.velero-backup-role.arn })]
+    }
+  }
+
+  tags = {
+    Environment = "dev"
+  }
+}
+
+
+
+resource "aws_iam_policy" "velero-backup" {
+  name = "velero-backup-policy-${module.eks.cluster_name}"
+
+  policy = jsonencode(
+    {
+      "Version" : "2012-10-17",
+      "Statement" : [
+        {
+          "Effect" : "Allow",
+          "Action" : [
+            "ec2:DescribeVolumes",
+            "ec2:DescribeSnapshots",
+            "ec2:CreateTags",
+            "ec2:CreateVolume",
+            "ec2:CreateSnapshot",
+            "ec2:DeleteSnapshot"
+          ],
+          "Resource" : "*"
+        },
+        {
+          "Effect" : "Allow",
+          "Action" : [
+            "s3:GetObject",
+            "s3:DeleteObject",
+            "s3:PutObject",
+            "s3:AbortMultipartUpload",
+            "s3:ListMultipartUploadParts"
+          ],
+          "Resource" : [
+            "arn:aws:s3:::bucket-s3-terraform-nequi/*"
+          ]
+        },
+        {
+          "Effect" : "Allow",
+          "Action" : [
+            "s3:ListBucket"
+          ],
+          "Resource" : [
+            "arn:aws:s3:::bucket-s3-terraform-nequi/*",
+            "arn:aws:s3:::bucket-s3-terraform-nequi"
+          ]
+        }
+      ]
+    }
+  )
+  tags = local.tags
+}
+
+resource "aws_iam_role" "velero-backup-role" {
+  name = "velero-backup-role-${module.eks.cluster_name}"
+  assume_role_policy = jsonencode(
+    {
+      "Version" : "2012-10-17",
+      "Statement" : [
+        {
+          "Effect" : "Allow",
+          "Principal" : {
+            Federated = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.cleaned_issuer_url}"
+          },
+          "Action" : "sts:AssumeRoleWithWebIdentity",
+          "Condition" : {
+            "StringEquals" : {
+              "${local.cleaned_issuer_url}:sub" = "system:serviceaccount:velero:velero-server"
+              "${local.cleaned_issuer_url}:aud" = "sts.amazonaws.com"
+            }
+          }
+        }
+      ]
+    }
+  )
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy_attachment" "velero_policy_attachment" {
+  policy_arn = aws_iam_policy.velero-backup.arn
+  role       = aws_iam_role.velero-backup-role.name
 }
 
 
