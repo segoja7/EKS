@@ -63,7 +63,6 @@ module "eks" {
       max_size     = 5
       desired_size = 2
       subnet_ids   = module.vpc.private_subnets
-
     }
 
   }
