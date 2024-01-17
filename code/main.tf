@@ -24,11 +24,13 @@ module "vpc" {
   public_subnet_tags = {
     "kubernetes.io/role/elb"              = 1
     "kubernetes.io/cluster/${local.name}" = "shared" #adding tags for deploy elb
+    # "karpenter.sh/discovery" = local.name
   }
 
   private_subnet_tags = {
     "kubernetes.io/role/internal-elb"     = 1
     "kubernetes.io/cluster/${local.name}" = "shared" #adding tags for deploy elb
+    "karpenter.sh/discovery"              = local.name
   }
 
   tags = local.tags
@@ -49,6 +51,7 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
+
   #we uses only 1 security group to allow connection with Fargate, MNG, and Karpenter nodes
   create_node_security_group = false
   eks_managed_node_groups = {
@@ -60,37 +63,58 @@ module "eks" {
       max_size     = 5
       desired_size = 2
       subnet_ids   = module.vpc.private_subnets
-      iam_role_additional_policies = {
-        EBSCSIDriverPolicy = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
-        #        Velero = aws_iam_policy.velero-backup.arn
-      }
-
 
     }
 
-    cluster_addons = {
-      coredns = {
-        most_recent = true
-      }
-      kube-proxy = {
-        most_recent = true
-      }
-      vpc-cni = {
-        most_recent = true
-      }
-      aws-ebs-csi-driver = {
-        most_recent = true
-      }
-    }
-
-
-    tags = merge(local.tags, {
-      # NOTE - if creating multiple security groups with this module, only tag the
-      # security group that Karpenter should utilize with the following tag
-      # (i.e. - at most, only one security group should have this tag in your account)
-      "karpenter.sh/discovery" = "${local.name}"
-    })
   }
+  #aws-auth configmap
+  manage_aws_auth_configmap = true
+
+
+  aws_auth_roles = [  ]
+
+  cluster_addons = {
+    coredns = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+    vpc-cni = {
+      most_recent = true
+    }
+    aws-ebs-csi-driver = {
+      most_recent = true
+    }
+  }
+  cluster_tags = {
+    "kubernetes.io/cluster/${local.name}" = null
+  }
+  node_security_group_tags = {
+    "kubernetes.io/cluster/${local.name}" = null
+  }
+  tags = merge(local.tags, {
+    # NOTE - if creating multiple security groups with this module, only tag the
+    # security group that Karpenter should utilize with the following tag
+    # (i.e. - at most, only one security group should have this tag in your account)
+    "karpenter.sh/discovery" = "${local.name}"
+  })
+
+}
+
+module "karpenter" {
+  source  = "terraform-aws-modules/eks/aws//modules/karpenter"
+  version = "19.17.1"
+
+  cluster_name                    = module.eks.cluster_name
+  irsa_oidc_provider_arn          = module.eks.oidc_provider_arn
+  irsa_namespace_service_accounts = ["karpenter:karpenter"]
+
+  create_iam_role      = false
+  iam_role_arn         = module.eks.eks_managed_node_groups["cloud-people"].iam_role_arn
+  irsa_use_name_prefix = false
+
+  tags = local.tags
 }
 
 module "eks_blueprints_addons" {
@@ -103,11 +127,12 @@ module "eks_blueprints_addons" {
   oidc_provider_arn = module.eks.oidc_provider_arn
 
 
-#  enable_velero = true
-#  velero = {
-#    s3_backup_location = "arn:aws:s3:::bucket-s3-terraform-nequi/velero-test"
-#  }
-#
+  #  enable_velero = true
+  #  velero = {
+  #    s3_backup_location = "arn:aws:s3:::bucket-s3-terraform-nequi/velero-test"
+  #  }
+  #https://github.com/vmware-tanzu/velero-plugin-for-aws/blob/master/backupstoragelocation.md
+
   helm_releases = {
     velero = {
       name             = "velero"
@@ -116,6 +141,49 @@ module "eks_blueprints_addons" {
       chart            = "./helm-charts/helm-charts-velero-5.2.0/velero"
       values           = [templatefile("./helm-charts/helm-charts-velero-5.2.0/velero/values.yaml", { ROLE = aws_iam_role.velero-backup-role.arn })]
     }
+    metrics-server = {
+      chart            = "./helm-charts/metrics-server"
+      name             = "metrics-server"
+      namespace        = "kube-system"
+      create_namespace = true
+      values           = [file("./helm-charts/metrics-server/values.yaml")]
+    }
+    karpenter = {
+      namespace        = "karpenter"
+      create_namespace = true
+
+      name                = "karpenter"
+      repository          = "oci://public.ecr.aws/karpenter"
+      repository_username = data.aws_ecrpublic_authorization_token.token.user_name
+      repository_password = data.aws_ecrpublic_authorization_token.token.password
+      chart               = "karpenter"
+      version             = "v0.32.2"
+
+      set = [
+        {
+          name  = "settings.clusterName"
+          value = module.eks.cluster_name
+        },
+        {
+          name  = "settings.clusterEndpoint"
+          value = module.eks.cluster_endpoint
+        },
+        {
+          name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+          value = module.karpenter.irsa_arn
+        },
+        {
+          name  = "settings.defaultInstanceProfile"
+          value = module.karpenter.instance_profile_name
+        },
+        {
+          name  = "settings.interruptionQueue"
+          value = module.karpenter.queue_name
+        }
+      ]
+
+
+    }
   }
 
   tags = {
@@ -123,7 +191,84 @@ module "eks_blueprints_addons" {
   }
 }
 
+resource "kubectl_manifest" "karpenter_provisioner" {
+  yaml_body = <<-YAML
+    apiVersion: karpenter.sh/v1alpha5
+    kind: Provisioner
+    metadata:
+      name: default
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"] #"spot"
+        - key: "node.kubernetes.io/instance-type"
+          operator: In
+          values: ["c5.large","c5a.large", "c5ad.large", "c5d.large", "c6i.large", "t2.medium", "t3.medium", "t3a.medium"]
+      limits:
+        resources:
+          cpu: 1000
+      providerRef:
+        name: default
+      ttlSecondsAfterEmpty: 30
+  YAML
 
+  depends_on = [
+    module.karpenter, helm_release.karpenter
+  ]
+}
+
+resource "kubectl_manifest" "karpenter_node_template" {
+  yaml_body = <<-YAML
+    apiVersion: karpenter.k8s.aws/v1alpha1
+    kind: AWSNodeTemplate
+    metadata:
+      name: default
+    spec:
+      subnetSelector:
+        karpenter.sh/discovery: ${module.eks.cluster_name}
+      securityGroupSelector:
+        karpenter.sh/discovery: ${module.eks.cluster_name}
+      tags:
+        karpenter.sh/discovery: ${module.eks.cluster_name}
+  YAML
+
+  depends_on = [
+    module.karpenter, helm_release.karpenter
+  ]
+}
+
+# Example deployment using the [pause image](https://www.ianlewis.org/en/almighty-pause-container)
+# and starts with zero replicas
+resource "kubectl_manifest" "karpenter_example_deployment" {
+  yaml_body = <<-YAML
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: inflate
+    spec:
+      replicas: 0
+      selector:
+        matchLabels:
+          app: inflate
+      template:
+        metadata:
+          labels:
+            app: inflate
+        spec:
+          terminationGracePeriodSeconds: 0
+          containers:
+            - name: inflate
+              image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+              resources:
+                requests:
+                  cpu: 1
+  YAML
+
+  depends_on = [
+    module.karpenter, helm_release.karpenter
+  ]
+}
 
 resource "aws_iam_policy" "velero-backup" {
   name = "velero-backup-policy-${module.eks.cluster_name}"
@@ -203,4 +348,47 @@ resource "aws_iam_role_policy_attachment" "velero_policy_attachment" {
   role       = aws_iam_role.velero-backup-role.name
 }
 
+
+resource "helm_release" "karpenter" {
+  namespace        = "karpenter"
+  create_namespace = true
+
+  name                = "karpenter"
+  repository          = "oci://public.ecr.aws/karpenter"
+  repository_username = data.aws_ecrpublic_authorization_token.token.user_name
+  repository_password = data.aws_ecrpublic_authorization_token.token.password
+  chart               = "karpenter"
+  version             = "v0.32.2"
+
+  set {
+    name  = "settings.aws.clusterName"
+    value = module.eks.cluster_name
+  }
+
+  set {
+    name  = "settings.aws.clusterEndpoint"
+    value = module.eks.cluster_endpoint
+  }
+
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
+    value = module.karpenter.irsa_arn
+  }
+
+  set {
+    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/sts-regional-endpoints"
+    value = "true"
+    type  = "string"
+  }
+
+  set {
+    name  = "settings.aws.defaultInstanceProfile"
+    value = module.karpenter.instance_profile_name
+  }
+
+  set {
+    name  = "settings.aws.interruptionQueueName"
+    value = module.karpenter.queue_name
+  }
+}
 

@@ -112,3 +112,5 @@ Temporary Items
 /doc/
 *.drawio
 *.drawio.bkp
+/code/helm-charts/metrics-server/
+/code/deployment-testkarpenter.yaml
