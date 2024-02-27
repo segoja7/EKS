@@ -100,139 +100,108 @@ module "eks" {
 
 }
 
-module "karpenter" {
-  source  = "terraform-aws-modules/eks/aws//modules/karpenter"
-  version = "19.20.0"
+module "eks_blueprints_addons" {
+  source  = "aws-ia/eks-blueprints-addons/aws"
+  version = "~> 1.0" #ensure to update this to the latest/desired version
 
-  cluster_name                    = module.eks.cluster_name
-  irsa_oidc_provider_arn          = module.eks.oidc_provider_arn
-  irsa_namespace_service_accounts = ["karpenter:karpenter"]
+  cluster_name      = module.eks.cluster_name
+  cluster_endpoint  = module.eks.cluster_endpoint
+  cluster_version   = module.eks.cluster_version
+  oidc_provider_arn = module.eks.oidc_provider_arn
 
-  create_iam_role      = false
-  iam_role_arn         = module.eks.eks_managed_node_groups["cloud-people"].iam_role_arn
-  irsa_use_name_prefix = false
+  helm_releases = {
+    efs-csi-driver = {
+      name             = "efs-csi-driver"
+      namespace        = "kube-system"
+      create_namespace = true
+      chart            = "./helm-charts/aws-efs-csi-driver"
+      values           = [
+        templatefile("./helm-charts/aws-efs-csi-driver/values.yaml", {
+          role_arn = aws_iam_role.efs_controller_role.arn,
+          efs_id = module.efs.id
+        })
+      ]
+    }
+  }
+}
 
-  #Additional policies
-  iam_role_additional_policies = {
-    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+
+module "efs" {
+  source  = "terraform-aws-modules/efs/aws"
+  version = "1.6.0"
+
+  name                            = "efs-testing"
+  encrypted                       = true
+  performance_mode                = "generalPurpose"
+  throughput_mode                 = "provisioned"
+  provisioned_throughput_in_mibps = 25
+  enable_backup_policy            = false
+  create_backup_policy            = false
+  attach_policy                   = true
+  policy_statements = [
+  {
+    sid    = "connect"
+    Effect = "Allow"
+    actions = ["elasticfilesystem:ClientMount",
+      "elasticfilesystem:ClientRootAccess",
+    "elasticfilesystem:ClientWrite"]
+    principals = [
+      {
+        type        = "AWS"
+        identifiers = ["*"]
+      }
+    ]
+  }
+]
+
+  lifecycle_policy = {
+    transition_to_ia = "AFTER_90_DAYS"
   }
 
+  mount_targets = {
+    for i in range(length(module.vpc.private_subnets)) :
+    module.vpc.private_subnets[i] => {
+      subnet_id       = module.vpc.private_subnets[i]
+    }
+  }
+#  security_group_vpc_id = data.aws_vpc.vpc_datasource.id
+  create_security_group = true
+  security_group_description = "EFS security group"
+  security_group_vpc_id           = module.vpc.vpc_id
+  security_group_rules = {
+    vpc = {
+      # relying on the defaults provdied for EFS/NFS (2049/TCP + ingress)
+      description = "NFS ingress from VPC private subnets"
+      cidr_blocks = module.vpc.private_subnets_cidr_blocks
+    }
+  }
+}
+
+resource "aws_iam_role" "efs_controller_role" {
+  name     = "role-efsdriver-${module.eks.cluster_name}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Principal = {
+          Federated = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${local.cleaned_issuer_url}"
+        },
+        Action = "sts:AssumeRoleWithWebIdentity",
+        Condition = {
+          StringEquals = {
+            "${local.cleaned_issuer_url}:sub" = "system:serviceaccount:kube-system:efs-csi-controller-sa"
+            "${local.cleaned_issuer_url}:aud" = "sts.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
   tags = local.tags
 }
 
-resource "helm_release" "karpenter" {
-  namespace        = "karpenter"
-  create_namespace = true
-
-  name                = "karpenter"
-  repository          = "oci://public.ecr.aws/karpenter"
-  repository_username = data.aws_ecrpublic_authorization_token.token.user_name
-  repository_password = data.aws_ecrpublic_authorization_token.token.password
-  chart               = "karpenter"
-  version             = "v0.31.3"
-
-  set {
-    name  = "settings.aws.clusterName"
-    value = module.eks.cluster_name
-  }
-
-  set {
-    name  = "settings.aws.clusterEndpoint"
-    value = module.eks.cluster_endpoint
-  }
-
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.karpenter.irsa_arn
-  }
-
-  set {
-    name  = "settings.aws.defaultInstanceProfile"
-    value = module.karpenter.instance_profile_name
-  }
-
-  set {
-    name  = "settings.aws.interruptionQueueName"
-    value = module.karpenter.queue_name
-  }
-}
-
-resource "kubectl_manifest" "karpenter_provisioner" {
-  yaml_body = <<-YAML
-    apiVersion: karpenter.sh/v1alpha5
-    kind: Provisioner
-    metadata:
-      name: default
-    spec:
-      requirements:
-        - key: karpenter.sh/capacity-type
-          operator: In
-          values: ["on-demand"] #"spot"
-        - key: "node.kubernetes.io/instance-type"
-          operator: In
-          values: ["c5.large","c5a.large", "c5ad.large", "c5d.large", "c6i.large", "t2.medium", "t3.medium", "t3a.medium"]
-      limits:
-        resources:
-          cpu: 1000
-      providerRef:
-        name: default
-      ttlSecondsAfterEmpty: 30
-  YAML
-
-  depends_on = [
-    helm_release.karpenter
-  ]
-}
-
-resource "kubectl_manifest" "karpenter_node_template" {
-  yaml_body = <<-YAML
-    apiVersion: karpenter.k8s.aws/v1alpha1
-    kind: AWSNodeTemplate
-    metadata:
-      name: default
-    spec:
-      subnetSelector:
-        karpenter.sh/discovery: ${module.eks.cluster_name}
-      securityGroupSelector:
-        karpenter.sh/discovery: ${module.eks.cluster_name}
-      tags:
-        karpenter.sh/discovery: ${module.eks.cluster_name}
-  YAML
-
-  depends_on = [
-    helm_release.karpenter
-  ]
-}
-
-# Example deployment using the [pause image](https://www.ianlewis.org/en/almighty-pause-container)
-# and starts with zero replicas
-resource "kubectl_manifest" "karpenter_example_deployment" {
-  yaml_body = <<-YAML
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-      name: inflate
-    spec:
-      replicas: 0
-      selector:
-        matchLabels:
-          app: inflate
-      template:
-        metadata:
-          labels:
-            app: inflate
-        spec:
-          terminationGracePeriodSeconds: 0
-          containers:
-            - name: inflate
-              image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
-              resources:
-                requests:
-                  cpu: 1
-  YAML
-
-  depends_on = [
-    helm_release.karpenter
-  ]
+resource "aws_iam_role_policy_attachment" "efs_controller_policy_attachment" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  role       = aws_iam_role.efs_controller_role.name
 }
 
