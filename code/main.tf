@@ -115,10 +115,10 @@ module "eks_blueprints_addons" {
       namespace        = "kube-system"
       create_namespace = true
       chart            = "./helm-charts/aws-efs-csi-driver"
-      values           = [
+      values = [
         templatefile("./helm-charts/aws-efs-csi-driver/values.yaml", {
           role_arn = aws_iam_role.efs_controller_role.arn,
-          efs_id = module.efs.id
+          efs_id   = module.efs.id
         })
       ]
     }
@@ -139,20 +139,20 @@ module "efs" {
   create_backup_policy            = false
   attach_policy                   = true
   policy_statements = [
-  {
-    sid    = "connect"
-    Effect = "Allow"
-    actions = ["elasticfilesystem:ClientMount",
-      "elasticfilesystem:ClientRootAccess",
-    "elasticfilesystem:ClientWrite"]
-    principals = [
-      {
-        type        = "AWS"
-        identifiers = ["*"]
-      }
-    ]
-  }
-]
+    {
+      sid    = "connect"
+      Effect = "Allow"
+      actions = ["elasticfilesystem:ClientMount",
+        "elasticfilesystem:ClientRootAccess",
+      "elasticfilesystem:ClientWrite"]
+      principals = [
+        {
+          type        = "AWS"
+          identifiers = ["*"]
+        }
+      ]
+    }
+  ]
 
   lifecycle_policy = {
     transition_to_ia = "AFTER_90_DAYS"
@@ -161,13 +161,13 @@ module "efs" {
   mount_targets = {
     for i in range(length(module.vpc.private_subnets)) :
     module.vpc.private_subnets[i] => {
-      subnet_id       = module.vpc.private_subnets[i]
+      subnet_id = module.vpc.private_subnets[i]
     }
   }
-#  security_group_vpc_id = data.aws_vpc.vpc_datasource.id
-  create_security_group = true
+  #  security_group_vpc_id = data.aws_vpc.vpc_datasource.id
+  create_security_group      = true
   security_group_description = "EFS security group"
-  security_group_vpc_id           = module.vpc.vpc_id
+  security_group_vpc_id      = module.vpc.vpc_id
   security_group_rules = {
     vpc = {
       # relying on the defaults provdied for EFS/NFS (2049/TCP + ingress)
@@ -178,7 +178,7 @@ module "efs" {
 }
 
 resource "aws_iam_role" "efs_controller_role" {
-  name     = "role-efsdriver-${module.eks.cluster_name}"
+  name = "role-efsdriver-${module.eks.cluster_name}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
