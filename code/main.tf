@@ -162,11 +162,11 @@ module "efs" {
     for i in range(length(module.vpc.private_subnets)) :
     module.vpc.private_subnets[i] => {
       subnet_id = module.vpc.private_subnets[i]
+#      security_groups = [module.security-group.security_group_id]
     }
   }
-  #  security_group_vpc_id = data.aws_vpc.vpc_datasource.id
-  create_security_group      = true
   security_group_description = "EFS security group"
+#  create_security_group = true
   security_group_vpc_id      = module.vpc.vpc_id
   security_group_rules = {
     vpc = {
